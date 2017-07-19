@@ -7,9 +7,170 @@
 ; A6 is ONLY to be used as a memorypointer to variables etc. so never SET a6 in the code.
 ; First some definitions.
 
-; obscene words like "kuk" marks really bad code or temporary crap.. just look away.
+; Segment type:	Pure code
+; segment "ROM"
+_custom         	EQU     $dff000
+intenar     		EQU   	$01C
+intena			EQU    	$09A
+
+MMC_BASE		EQU    $800000
+
+	;; IDE interface 
+IDE_Slow	EQU	$da0000
+AT_Data		EQU	$00		; 16 bit wide port
+AT_Error	EQU	$04		; error register
+AT_SectorCnt	EQU	$08		; # of sectors, 0 = 256
+AT_SectorNum	EQU	$0c		; sector to start (1-based!)
+AT_CylLow	EQU	$10		; low byte of Cylinder number
+AT_CylHigh	EQU	$14		; high byte
+AT_DriveHead	EQU	$18		; Drive and head number | $A0
+AT_Status	EQU	$1c		; (read) status reg, clears interrupt
+AT_Command	EQU	$1c		; (write) command value, starts it
+AT_AltStatus	EQU	$1018		; (read) alt status, doesn't clear int
+AT_DeviceCtrl	EQU	$1018		; (write) device control - int/reset
+AT_DriveAddress	EQU	$101c		; not used (pc-ish)
+AT_IntStatus	EQU	$1000		; interrupt status bit, active low
+
+; Gayle address and offsets
+GAYLE_ADDR	EQU	$da8000
+GAYLE_ID_ADDR	EQU	$de1000
+GAYLE_VERSION	EQU	%00001101	; version 1101 (first)
+GAYLE_IntStatus	EQU	0
+GAYLE_IntChange	EQU	$1000
+GAYLE_IntEnable	EQU	$2000
+GAYLE_Control	EQU	$3000
 
 
+FPCR    	EQU     $1000
+FPSR    	EQU     $0800
+FPIAR   	EQU     $0400
+
+PRINT		macro
+		lea	(\1).l,a0
+		lea	(.r_\@).l,a1
+		jmp	DumpSerial
+.r_\@
+		endm
+
+SPRINT		macro
+		movem.l d0-d7/a0-a4,-(sp)
+		PRINT  \1
+		movem.l (sp)+,d0-d7/a0-a4
+		endm
+
+	
+CONVHEX        macro
+	       lea	(.r_\@).l,a1
+	       jmp	bin2hex
+.r_\@
+	       endm
+
+PRINTHEX       macro
+	       move.w  d0,d1
+	       lea	(.r1_\@).l,a1
+	       jmp	bin2hex
+.r1_\@
+	       lea	(.r2_\@).l,a1
+	       jmp	charout
+.r2_\@
+	       lsr     #8,d1
+	       lea	(.r3_\@).l,a1
+	       jmp	charout
+.r3_\@
+	       endm
+
+SPRINTHEX      macro
+	       movem.l d0-d7/a0-a4,-(sp)
+	       move.w  d0,d1
+
+	       lea	(.r1_\@).l,a1
+	       jmp	bin2hex
+.r1_\@
+	       lea	(.r2_\@).l,a1
+	       jmp	charout
+.r2_\@
+	       lsr     #8,d1
+	       lea	(.r3_\@).l,a1
+	       jmp	charout
+.r3_\@
+	       movem.l (sp)+,d0-d7/a0-a4
+	       endm
+
+	
+CHAROUT        macro
+	       move    #\1,d1
+	       lea	(.r_\@).l,a1
+	       bra.w	charout
+.r_\@
+	       endm
+
+
+SCHAROUT        macro
+	       movem.l d0-d7/a0-a4,-(sp)
+	       move    #\1,d1
+	       lea	(.r_\@).l,a1
+	       bra.w	charout
+.r_\@
+	       movem.l (sp)+,d0-d7/a0-a4
+	       endm
+
+
+CHAROUTD       macro
+	       move    d0,d1
+	       lea	(.r_\@).l,a1
+	       bra.w	charout
+.r_\@
+	       endm
+
+
+
+	
+	;; This will write out the contents of D0 to serial as hex 
+	;;  
+PRINTHEX16     macro
+	
+	       move.w  d0,d1
+	       lsr     #8,d1
+	       lea	(.r1_\@).l,a1
+	       bra.w	bin2hex
+.r1_\@
+	       lea	(.r2_\@).l,a1
+	       bra.w	charout
+.r2_\@
+	       lsr     #8,d1
+	       lea	(.r3_\@).l,a1
+	       bra.w	charout
+.r3_\@
+	       move.w  d0,d1
+	       lea	(.r4_\@).l,a1
+	       bra.w	bin2hex
+.r4_\@
+	       lea	(.r5_\@).l,a1
+	       bra.w	charout
+.r5_\@
+	       lsr     #8,d1
+	       lea	(.r6_\@).l,a1
+	       bra.w	charout
+.r6_\@
+	       endm
+
+SPRINTHEX32	macro
+		movem.l d0-d7/a0-a4,-(sp)
+	        swap d0
+                PRINTHEX16
+		movem.l (sp)+,d0-d7/a0-a4
+		movem.l d0-d7/a0-a4,-(sp)
+                PRINTHEX16
+		movem.l (sp)+,d0-d7/a0-a4
+		endm
+
+	
+
+SPRINTHEX16	macro
+		movem.l d0-d7/a0-a4,-(sp)
+		PRINTHEX16
+		movem.l (sp)+,d0-d7/a0-a4
+		endm
 	
 VER:	MACRO
 	dc.b "0"			; Versionnumber
@@ -49,10 +210,11 @@ VBLT:		MACRO
 
 rom_base:	equ $f80000		; Originate as if data is in ROM
 
+	org rom_base
 ; Then some different modes for the assembler
 
 
-rommode =	0				; Set to 1 if to assemble as being in ROM
+rommode =	1				; Set to 1 if to assemble as being in ROM
 debug = 	0				; Set to 1 to enable some debugshit in code
 amiga = 	1 				; Set to 1 to create an amiga header to write the ROM to disk
 
@@ -87,54 +249,11 @@ amiga = 	1 				; Set to 1 to create an amiga header to write the ROM to disk
 LOWRESSize:	equ	40*256
 HIRESSize:	equ	80*512
 
-	ifne	rommode
-						; If we are in ROM Mode and start.
-						; just save the file to disk.
-	ifne	amiga
-	
-SaveFile:
-	lea	.filnamn,a5
-	move.l	$4,a6
-	lea	Dos,a1
-	jsr	-408(a6)
-	move.l	d0,a6
-	move.l	a5,d1
-	jsr	-72(a6)				; Delete file
-	move.l	a5,d1
-	move.l	#1006,d2
-	jsr	-30(a6)
-	beq	.Error
-	move.l	d0,.Peekare
-	move.l	d0,d1
-	move.l	#a,d2
-	move.l	#b-a,d3
-	jsr	-48(a6)
-
-
-	move.l	.Peekare,d1
-	jsr	-36(a6)
-	clr.l	d0
-	rts
-
-.Error:
-	move.l	#-1,d0
-	rts
-
-.Peekare:
-	dc.l	0
-.filnamn:
-	dc.b	"DiagROM/DiagROM",0
-Dos:
-	dc.b	"dos.library",0
-
-a:	equ $180000
-b:	equ a+512*1024
-	endc			; end the amiga writer header.
 
 	org rom_base		; Originate as if data is in ROM
 
 	ifne	amiga           ; 
-	load a			; PUT Data in where A points to, change this to a safe location for your machine.
+	;; load a			; PUT Data in where A points to, change this to a safe location for your machine.
 	endc
 
 START:
@@ -147,7 +266,6 @@ START:
 
 
 
-	endc
 
 ; Lets start the code..  with a jump
 TheStart:
@@ -169,7 +287,7 @@ strstart:
 
 	dc.b	"$VER: DiagROM Amiga Diagnostic by John Hertell. "
 	dc.b	"www.diagrom.com "
-	incbin	"ram:BootDate.txt"
+	incbin	"BuildDate.txt"
 	dc.b	"- "
 	VERSION
 strstop:
@@ -681,9 +799,247 @@ POSTDetectChipmem:
 
 .base3:
 
-
-
 ;----------- Chipmemtest done
+
+; ---------- Terrible Fire Tests
+
+zorro_tests:
+		MOVE.B	#$DE,($BFE101).l
+		PRINT   aParallelCodeDE
+	
+zorro_next_board:
+	        PRINT   aZorroTest
+	;; read out the expansion rom
+		lea	$4000,a2
+		lea	E_EXPANSIONBASE,a0
+		bsr	ReadRom
+
+		lea	$4000,a2
+		tst.b	er_Reserved03(a2)
+		bne	NoMoreBoards
+
+		move.w	er_Manufacturer(a2),d0
+		beq	NoMoreBoards
+		cmp.w	#-1,d0
+		beq	NoMoreBoards
+	
+		lea	$4000,a2	
+		move.l	#0,d6
+.loop	
+	        CHAROUT 48
+	        CHAROUT 120
+		clr.l	d0	
+		move.b	(a2)+,d0
+	        PRINTHEX 
+	        CHAROUT 32
+
+		addq.l	#1,d6
+		cmp.w	#ExpansionRom_SIZEOF,d6
+		blt	.loop
+
+		CHAROUT $a
+		CHAROUT $d
+zorro_test_again:	
+	;; read out the expansion rom again
+ 		lea	$4010,a2
+		lea	E_EXPANSIONBASE,a0
+
+		bsr	ReadRom
+
+		lea	$4010,a2	
+		move.l	#0,d6
+.loop	
+		clr.l	d0	
+		move.b	(a2)+,d0
+
+		addq.l	#1,d6
+		cmp.w	#ExpansionRom_SIZEOF,d6
+		blt	.loop
+
+check_equal_test:
+		PRINT 	aZorroTestEqual
+		moveq.l	#0,d6
+		lea	$4000,a0
+		lea	$4010,a1
+check_loop:	
+		move.b	(a1),d1
+		move.b	(a0),d0
+		move.b	#0,(a0)+
+		move.b	#0,(a1)+
+	
+		cmp.b	d0,d1
+		beq	.pass
+
+		PRINT	aTestFailed
+		bra 	.end
+.pass
+		addq.l	#1,d6
+		cmp.w	#ExpansionRom_SIZEOF,d6
+		blt	check_loop
+
+		PRINT	aTestPassed		
+.end
+
+complete_config:
+		PRINT	aZorroDoConfig
+		lea	E_EXPANSIONBASE,a0
+
+		bsr	DumbConfigBoard
+
+		cmp.l	#0,d0
+		blt	.error1
+
+		cmp.l	#0,d0	
+		beq	.ramboard
+		PRINT   aZorroIINonRAMDone
+		bra	zorro_next_board
+.ramboard
+
+		PRINT   aZorroIIDone
+		bra	zorro_next_board
+.error1
+		cmp.l	#-1,d0
+		bne	.error2
+		PRINT   aZorroIIISkipped
+		bra	zorro_next_board
+.error2
+		cmp.l	#1,d0	
+		bne	.errorUnknown
+		PRINT   aZorroIINonRAMDone
+		bra	zorro_next_board
+.errorUnknown
+		PRINT   aTestFailed
+
+NoMoreBoards:
+
+	PRINT   aZorroDone
+
+
+ide_tests:
+	
+	    SPRINT aIDETests
+sjlGaryVersion:
+		SPRINT aChipsetMirror
+
+		lea	_custom,a0
+		lea	GAYLE_ID_ADDR,a1	GAYLE id address
+
+		move.w	intenar(a0),-(sp)	save old value
+		move.w	#$bfff,intena(a1)	set all ables
+		move.w	#$3fff,d1		also flag for no mirror
+		cmp.w	intenar(a0),d1
+		bne.s	.no_mirror
+		move.w	d1,intena(a1)		clear all ables
+		tst.w	intenar(a0)
+		bne.s	.no_mirror
+		moveq	#0,d1			mirrored
+		SPRINT	aMirrorDetected
+.no_mirror					
+
+		move.w	#$3fff,intena(a0)	clear bits
+		ori.w	#$8000,(sp)		add set bit
+		move.w	(sp)+,intena(a0)	reset values
+
+		tst.w	d1			did we find mirroring?
+		beq	.no_hw			yes, exit
+
+		SPRINT	aMirrorNotDetected
+
+	;; dont have a mirror
+	
+		moveq	#0,d1
+		move.b	d1,(a1)			value doesn't matter
+		
+		bsr	get_gid_bit		get 4 bits
+		bsr	get_gid_bit
+		bsr	get_gid_bit
+		bsr	get_gid_bit
+
+		SPRINT  aReadGayleVersion
+		move.w	d1,d0
+		SPRINTHEX
+		SPRINT	aCrLf
+		
+		cmp.b	#GAYLE_VERSION,d1
+		beq.s	sjlGayleFound
+	
+.no_hw
+		SPRINT	aIDEInterfaceNotFound
+		jmp	endIDETests
+sjlGayleFound
+		; Ok we have an ide interface at this point
+		SPRINT	aIDEInterfaceFound
+
+		
+		jsr	IDEWaitRDY
+
+		SPRINT	Donetxt
+		
+		cmp.b	#0,d2
+		beq	nointexit
+
+		move.b	#$EC,d0 ; read the drive ID.
+		jsr	IDECommand
+
+BoardServer
+		SPRINT	aIDEInterruptCheck
+		moveq.l	#0,d0			assume it's not our interrupt
+		lea	GAYLE_ADDR,a0	point to the board
+		move.b	GAYLE_IntChange(a0),d1	check for int!
+		bpl	nointexit			not ours
+	
+		SPRINT	aIDEInterruptDetected
+
+		bsr	IDECheckStatus
+	
+		; our interrupt, clear it
+		; must clear drive first, then gayle
+		move.l	IDE_Slow,a2
+		move.b	AT_Status(a2),d1		clears interrupt (IDE)
+
+		SPRINT	aIDEInterruptClearedDrive
+
+		bsr	IDECheckStatus
+	
+		move.w	SR,d2			save current SR
+		ori.w	#$0700,SR		raise int priority to level 7
+		move.b	GAYLE_IntChange(a0),d1
+
+		SPRINT	aIDEInterruptIntChangedReading
+		move.w 	d1,d0
+		SPRINTHEX
+		SPRINT aCrLf
+intwrite:	
+		
+		and.b	#$03,d1			leave low two bits alone
+		or.b	#$7c,d1			clear IDE int, leave the rest
+
+		SPRINT	aIDEInterruptIntChangedWriting
+		move.w 	d1,d0
+		SPRINTHEX
+		SPRINT aCrLf
+	
+		move.b	d1,GAYLE_IntChange(a0)	clear latch in Gayle
+		move.w	d2,SR			re-enable normal int level
+
+		lea	IDE_Slow,a2
+		jsr	IDEReadData
+
+		bsr	IDECheckStatus	
+	
+		bra	endIDETests
+	
+nointexit:
+		SPRINT	aIDEInterruptNotDetected
+
+		moveq.l #0,d0
+		move.b	d1,d0
+		SPRINTHEX
+		SPRINT aCrLf
+
+endIDETests:
+
+; ---------- Terrible Fire Tests Done.
 
 	PAROUT	#$fc			; Send $fd to parallelport
 	lea	parfctxt,a0		; And explaining simliar text to serialport.
@@ -1126,14 +1482,14 @@ code:
 	bsr	SendSerial
 
 
-
 	bsr	ClearScreenNoSerial
+
+
 
 	lea	InitTxt,a0
 	move.l	#7,d1
 	bsr	Print
 	bra	.Chip
-
 .NoChip:
 	lea	NoDrawTxt,a0
 	bsr	SendSerial
@@ -1345,7 +1701,7 @@ ClearScreen:
 	clr.l	(a2)+
 	dbf	d0,.loop
 .no:
-	lea	AnsiNull(pc),a0
+	lea	AnsiNull,a0
 	bsr	SendSerial
 
 	move.l	#12,d0
@@ -2212,7 +2568,7 @@ PutChar:
 .Normal:
 
 	mulu	#640,d3				; Multiply Y with 640 to get a correct Y pos on screen
-	add.w	d2,d3				; Add X pos to the d3. D3 now contains how much to add to bitplane to print
+	add.w	d2,d3				; AddÂ X pos to the d3. D3 now contains how much to add to bitplane to print
 
 	move.l	Bpl1Ptr-V(a6),a0		; load A0 with address of BPL1
 	move.l	Bpl2Ptr-V(a6),a1		; load A1 with address of BPL2
@@ -6835,7 +7191,7 @@ DrawLine:
 	VBLT
 
 	move.w	d2,$dff062	;2*Smaller delta tp BLTBMOD
-	sub.w	d3,d2	; 2*smaööer delta - larger delta
+	sub.w	d3,d2	; 2*smaÃ¶Ã¶er delta - larger delta
 	ble.s	.signn1	;When 2*small delta > largedelta to signn1
 
 	or.b	#$40,d5	;Sign flag set
@@ -8070,7 +8426,131 @@ oki:
 	bsr	PrintChar
 	rts
 
+
+; =============== S U B	R O U T	I N E =======================================
+
+IDECheckStatus:
+		SPRINT	aIDEInterruptIntStatusReading
+		move.b	$0DA8000,d0
+		SPRINTHEX
+		SPRINT aCrLf
+		rts
+
+IDECheckChanged:
+		SPRINT	aIDEChange
+		move.w	$0DA9000,d0
+		PRINTHEX16
+		SPRINT 	aCrLf
+
+		rts
+	
+IDECommand:	move.b	d0,$0DA001C
+		rts
+
+IDEReadData:
+		SPRINT	aIDERead
+		SPRINT	aCrLf
+		move.l	#0,d3
+		move.l	#0,d4
+.loop
+		move.w	AT_Data(a2),d0
+		
+		SPRINTHEX16
+		SCHAROUT 32
+		
+		addq.l 	#1,d3
+		addq.l 	#1,d4
+		cmp	#8,d4
+		ble	.loop
+		SPRINT	aCrLf
+	
+		moveq.l	#0,d4
+		cmp	#256,d3
+		ble	.loop
+	
+		rts
+
+IDEWaitRDY:
+		move.w	#10,d2
+		move.w	d0,$800
+.loop
+		move.w	$800,d2
+		sub.w	#1,d2
+		move.w	d2,$800
+
+		SPRINT	aIDERDY
+		move.b	$0DA001C,d0
+		and.b	#$C1,d0
+		move.b	d0,d4
+		PRINTHEX
+		CHAROUT 32
+		CHAROUT 40
+		move.w	$0DA001C,d0
+		PRINTHEX16
+		CHAROUT 41
+		SPRINT 	aCrLf
+
+		move.w	$800,d2
+		cmp.w	#0,d2
+		beq	.exit
+	
+		cmp.b	#$40,d4
+		bne	.loop
+.exit	
+		rts
+
+IDEWaitDRQ:
+		SPRINT	aIDEDRQ
+		move.b	$0DA001C,d0
+		and.b	#$C9,d0
+		move.b	d0,d4
+		PRINTHEX
+		CHAROUT 32
+		CHAROUT 40
+		move.w	$0DA001C,d0
+		PRINTHEX16
+		CHAROUT 41
+		SPRINT 	aCrLf
+		cmp.b	#$48,d4
+		bne	IDEWaitDRQ
+		rts
+
+get_gid_bit:			; read a gary / gayle bit
+		move.b	(a1),d0
+		lsl.b	#1,d0
+		roxl.b	#1,d1
+		rts
+	
+; =============== S U B	R O U T	I N E =======================================; 
+	
+charout:
+		move.w	#$4000,($DFF09A).l
+		move.w	#$175,($DFF032).l
+		move.b	#$4F,($BFD000).l
+		move.w	#$801,($DFF09A).l
+		move.w	#$801,($DFF09C).l
+		clr.l	d7
+
+		move.l	#$3710,d2
+.wait
+		move.b	($BFE001).l,d7
+		subi.l	#1,d2
+		cmpi.l	#0,d2
+		beq.w	.done
+		move.w	($DFF018).l,d7
+		btst	#$D,d7
+		beq.s	.wait
+
+.done
+		move.w	#$100,d7
+		move.b	d1,d7
+		move.w	d7,($DFF030).l
+		move.w	#1,($DFF09C).l
+
+		jmp	(a1)
 ;------------------------------------------------------------------------------------------
+
+
 
 AutoConfig:					; Do Autoconfigmagic
 	bsr	ClearScreen
@@ -8352,8 +8832,8 @@ PrintNo:
 		bsr	Print
 		rts
 
-
 ; =============== S U B	R O U T	I N E =======================================
+
 	
 ReadRom: ; a0 = card, a2 = dest
 		move.l	a0,a3
@@ -8414,6 +8894,55 @@ ReadExpansionByte:
 		and.b	#$f0,d0
 		or.b	d1,d0
 		
+		rts
+
+; =============== S U B	R O U T	I N E =======================================
+
+DumbConfigBoard:
+		move.l	#-1,d0
+		moveq	#$FFFFFF00+ERT_TYPEMASK,d1
+		and.b	er_Type(a0),d1
+		cmp.b	#ERT_ZORROII,d1
+		bne.s	.ConfigBoard_Z3
+
+	;;  pass the type byte
+		move.b	er_Type(a0),d0
+		bra	.ConfigBoard_Z2_RAM
+	
+.ConfigBoard_Z3:	
+		moveq	#ec_Shutup+ExpansionRom_SIZEOF,d0
+		bsr	WriteExpansionByte
+
+		move.l	#-1,d0
+        rts
+
+.ConfigBoard_Z2_RAM:
+
+		btst	#5,d0
+		beq	.ConfigBoard_NonRAM
+
+;;;  hack to put a Z2 memory card at address 0x200000
+		move.l	#$20,d1
+		moveq	#ec_BaseAddress+ExpansionRom_SIZEOF,d0
+		bsr	WriteExpansionByte
+
+.ConfigBoard_Done:
+		move.l	#0,d0
+        rts
+
+.ConfigBoard_NonRAM:
+		move.l	#$E9,d1
+		moveq	#ec_BaseAddress+ExpansionRom_SIZEOF,d0
+		bsr	WriteExpansionByte
+
+		move.l	#2,d0
+        rts
+	
+.ConfigBoard_Shutup:
+		moveq	#ec_Shutup+ExpansionRom_SIZEOF,d0 
+		bsr	WriteExpansionByte
+
+		move.l	#-2,d0
 		rts
 
 ; =============== S U B	R O U T	I N E =======================================
@@ -10779,6 +11308,1291 @@ mt_Chan4:
 
 mt_END:
 
+bin2hex:
+             cmp.b   #0,d1
+             bne.s   .nxt0
+             move.w   #$3030,d1
+             jmp     (a1)
+.nxt0:
+             cmp.b   #1,d1
+             bne.s   .nxt1
+             move.w   #$3130,d1
+             jmp     (a1)
+.nxt1:
+             cmp.b   #2,d1
+             bne.s   .nxt2
+             move.w   #$3230,d1
+             jmp     (a1)
+.nxt2:
+             cmp.b   #3,d1
+             bne.s   .nxt3
+             move.w   #$3330,d1
+             jmp     (a1)
+.nxt3:
+             cmp.b   #4,d1
+             bne.s   .nxt4
+             move.w   #$3430,d1
+             jmp     (a1)
+.nxt4:
+             cmp.b   #5,d1
+             bne.s   .nxt5
+             move.w   #$3530,d1
+             jmp     (a1)
+.nxt5:
+             cmp.b   #6,d1
+             bne.s   .nxt6
+             move.w   #$3630,d1
+             jmp     (a1)
+.nxt6:
+             cmp.b   #7,d1
+             bne.s   .nxt7
+             move.w   #$3730,d1
+             jmp     (a1)
+.nxt7:
+             cmp.b   #8,d1
+             bne.s   .nxt8
+             move.w   #$3830,d1
+             jmp     (a1)
+.nxt8:
+             cmp.b   #9,d1
+             bne.s   .nxt9
+             move.w   #$3930,d1
+             jmp     (a1)
+.nxt9:
+             cmp.b   #10,d1
+             bne.s   .nxt10
+             move.w   #$4130,d1
+             jmp     (a1)
+.nxt10:
+             cmp.b   #11,d1
+             bne.s   .nxt11
+             move.w   #$4230,d1
+             jmp     (a1)
+.nxt11:
+             cmp.b   #12,d1
+             bne.s   .nxt12
+             move.w   #$4330,d1
+             jmp     (a1)
+.nxt12:
+             cmp.b   #13,d1
+             bne.s   .nxt13
+             move.w   #$4430,d1
+             jmp     (a1)
+.nxt13:
+             cmp.b   #14,d1
+             bne.s   .nxt14
+             move.w   #$4530,d1
+             jmp     (a1)
+.nxt14:
+             cmp.b   #15,d1
+             bne.s   .nxt15
+             move.w   #$4630,d1
+             jmp     (a1)
+.nxt15:
+             cmp.b   #16,d1
+             bne.s   .nxt16
+             move.w   #$3031,d1
+             jmp     (a1)
+.nxt16:
+             cmp.b   #17,d1
+             bne.s   .nxt17
+             move.w   #$3131,d1
+             jmp     (a1)
+.nxt17:
+             cmp.b   #18,d1
+             bne.s   .nxt18
+             move.w   #$3231,d1
+             jmp     (a1)
+.nxt18:
+             cmp.b   #19,d1
+             bne.s   .nxt19
+             move.w   #$3331,d1
+             jmp     (a1)
+.nxt19:
+             cmp.b   #20,d1
+             bne.s   .nxt20
+             move.w   #$3431,d1
+             jmp     (a1)
+.nxt20:
+             cmp.b   #21,d1
+             bne.s   .nxt21
+             move.w   #$3531,d1
+             jmp     (a1)
+.nxt21:
+             cmp.b   #22,d1
+             bne.s   .nxt22
+             move.w   #$3631,d1
+             jmp     (a1)
+.nxt22:
+             cmp.b   #23,d1
+             bne.s   .nxt23
+             move.w   #$3731,d1
+             jmp     (a1)
+.nxt23:
+             cmp.b   #24,d1
+             bne.s   .nxt24
+             move.w   #$3831,d1
+             jmp     (a1)
+.nxt24:
+             cmp.b   #25,d1
+             bne.s   .nxt25
+             move.w   #$3931,d1
+             jmp     (a1)
+.nxt25:
+             cmp.b   #26,d1
+             bne.s   .nxt26
+             move.w   #$4131,d1
+             jmp     (a1)
+.nxt26:
+             cmp.b   #27,d1
+             bne.s   .nxt27
+             move.w   #$4231,d1
+             jmp     (a1)
+.nxt27:
+             cmp.b   #28,d1
+             bne.s   .nxt28
+             move.w   #$4331,d1
+             jmp     (a1)
+.nxt28:
+             cmp.b   #29,d1
+             bne.s   .nxt29
+             move.w   #$4431,d1
+             jmp     (a1)
+.nxt29:
+             cmp.b   #30,d1
+             bne.s   .nxt30
+             move.w   #$4531,d1
+             jmp     (a1)
+.nxt30:
+             cmp.b   #31,d1
+             bne.s   .nxt31
+             move.w   #$4631,d1
+             jmp     (a1)
+.nxt31:
+             cmp.b   #32,d1
+             bne.s   .nxt32
+             move.w   #$3032,d1
+             jmp     (a1)
+.nxt32:
+             cmp.b   #33,d1
+             bne.s   .nxt33
+             move.w   #$3132,d1
+             jmp     (a1)
+.nxt33:
+             cmp.b   #34,d1
+             bne.s   .nxt34
+             move.w   #$3232,d1
+             jmp     (a1)
+.nxt34:
+             cmp.b   #35,d1
+             bne.s   .nxt35
+             move.w   #$3332,d1
+             jmp     (a1)
+.nxt35:
+             cmp.b   #36,d1
+             bne.s   .nxt36
+             move.w   #$3432,d1
+             jmp     (a1)
+.nxt36:
+             cmp.b   #37,d1
+             bne.s   .nxt37
+             move.w   #$3532,d1
+             jmp     (a1)
+.nxt37:
+             cmp.b   #38,d1
+             bne.s   .nxt38
+             move.w   #$3632,d1
+             jmp     (a1)
+.nxt38:
+             cmp.b   #39,d1
+             bne.s   .nxt39
+             move.w   #$3732,d1
+             jmp     (a1)
+.nxt39:
+             cmp.b   #40,d1
+             bne.s   .nxt40
+             move.w   #$3832,d1
+             jmp     (a1)
+.nxt40:
+             cmp.b   #41,d1
+             bne.s   .nxt41
+             move.w   #$3932,d1
+             jmp     (a1)
+.nxt41:
+             cmp.b   #42,d1
+             bne.s   .nxt42
+             move.w   #$4132,d1
+             jmp     (a1)
+.nxt42:
+             cmp.b   #43,d1
+             bne.s   .nxt43
+             move.w   #$4232,d1
+             jmp     (a1)
+.nxt43:
+             cmp.b   #44,d1
+             bne.s   .nxt44
+             move.w   #$4332,d1
+             jmp     (a1)
+.nxt44:
+             cmp.b   #45,d1
+             bne.s   .nxt45
+             move.w   #$4432,d1
+             jmp     (a1)
+.nxt45:
+             cmp.b   #46,d1
+             bne.s   .nxt46
+             move.w   #$4532,d1
+             jmp     (a1)
+.nxt46:
+             cmp.b   #47,d1
+             bne.s   .nxt47
+             move.w   #$4632,d1
+             jmp     (a1)
+.nxt47:
+             cmp.b   #48,d1
+             bne.s   .nxt48
+             move.w   #$3033,d1
+             jmp     (a1)
+.nxt48:
+             cmp.b   #49,d1
+             bne.s   .nxt49
+             move.w   #$3133,d1
+             jmp     (a1)
+.nxt49:
+             cmp.b   #50,d1
+             bne.s   .nxt50
+             move.w   #$3233,d1
+             jmp     (a1)
+.nxt50:
+             cmp.b   #51,d1
+             bne.s   .nxt51
+             move.w   #$3333,d1
+             jmp     (a1)
+.nxt51:
+             cmp.b   #52,d1
+             bne.s   .nxt52
+             move.w   #$3433,d1
+             jmp     (a1)
+.nxt52:
+             cmp.b   #53,d1
+             bne.s   .nxt53
+             move.w   #$3533,d1
+             jmp     (a1)
+.nxt53:
+             cmp.b   #54,d1
+             bne.s   .nxt54
+             move.w   #$3633,d1
+             jmp     (a1)
+.nxt54:
+             cmp.b   #55,d1
+             bne.s   .nxt55
+             move.w   #$3733,d1
+             jmp     (a1)
+.nxt55:
+             cmp.b   #56,d1
+             bne.s   .nxt56
+             move.w   #$3833,d1
+             jmp     (a1)
+.nxt56:
+             cmp.b   #57,d1
+             bne.s   .nxt57
+             move.w   #$3933,d1
+             jmp     (a1)
+.nxt57:
+             cmp.b   #58,d1
+             bne.s   .nxt58
+             move.w   #$4133,d1
+             jmp     (a1)
+.nxt58:
+             cmp.b   #59,d1
+             bne.s   .nxt59
+             move.w   #$4233,d1
+             jmp     (a1)
+.nxt59:
+             cmp.b   #60,d1
+             bne.s   .nxt60
+             move.w   #$4333,d1
+             jmp     (a1)
+.nxt60:
+             cmp.b   #61,d1
+             bne.s   .nxt61
+             move.w   #$4433,d1
+             jmp     (a1)
+.nxt61:
+             cmp.b   #62,d1
+             bne.s   .nxt62
+             move.w   #$4533,d1
+             jmp     (a1)
+.nxt62:
+             cmp.b   #63,d1
+             bne.s   .nxt63
+             move.w   #$4633,d1
+             jmp     (a1)
+.nxt63:
+             cmp.b   #64,d1
+             bne.s   .nxt64
+             move.w   #$3034,d1
+             jmp     (a1)
+.nxt64:
+             cmp.b   #65,d1
+             bne.s   .nxt65
+             move.w   #$3134,d1
+             jmp     (a1)
+.nxt65:
+             cmp.b   #66,d1
+             bne.s   .nxt66
+             move.w   #$3234,d1
+             jmp     (a1)
+.nxt66:
+             cmp.b   #67,d1
+             bne.s   .nxt67
+             move.w   #$3334,d1
+             jmp     (a1)
+.nxt67:
+             cmp.b   #68,d1
+             bne.s   .nxt68
+             move.w   #$3434,d1
+             jmp     (a1)
+.nxt68:
+             cmp.b   #69,d1
+             bne.s   .nxt69
+             move.w   #$3534,d1
+             jmp     (a1)
+.nxt69:
+             cmp.b   #70,d1
+             bne.s   .nxt70
+             move.w   #$3634,d1
+             jmp     (a1)
+.nxt70:
+             cmp.b   #71,d1
+             bne.s   .nxt71
+             move.w   #$3734,d1
+             jmp     (a1)
+.nxt71:
+             cmp.b   #72,d1
+             bne.s   .nxt72
+             move.w   #$3834,d1
+             jmp     (a1)
+.nxt72:
+             cmp.b   #73,d1
+             bne.s   .nxt73
+             move.w   #$3934,d1
+             jmp     (a1)
+.nxt73:
+             cmp.b   #74,d1
+             bne.s   .nxt74
+             move.w   #$4134,d1
+             jmp     (a1)
+.nxt74:
+             cmp.b   #75,d1
+             bne.s   .nxt75
+             move.w   #$4234,d1
+             jmp     (a1)
+.nxt75:
+             cmp.b   #76,d1
+             bne.s   .nxt76
+             move.w   #$4334,d1
+             jmp     (a1)
+.nxt76:
+             cmp.b   #77,d1
+             bne.s   .nxt77
+             move.w   #$4434,d1
+             jmp     (a1)
+.nxt77:
+             cmp.b   #78,d1
+             bne.s   .nxt78
+             move.w   #$4534,d1
+             jmp     (a1)
+.nxt78:
+             cmp.b   #79,d1
+             bne.s   .nxt79
+             move.w   #$4634,d1
+             jmp     (a1)
+.nxt79:
+             cmp.b   #80,d1
+             bne.s   .nxt80
+             move.w   #$3035,d1
+             jmp     (a1)
+.nxt80:
+             cmp.b   #81,d1
+             bne.s   .nxt81
+             move.w   #$3135,d1
+             jmp     (a1)
+.nxt81:
+             cmp.b   #82,d1
+             bne.s   .nxt82
+             move.w   #$3235,d1
+             jmp     (a1)
+.nxt82:
+             cmp.b   #83,d1
+             bne.s   .nxt83
+             move.w   #$3335,d1
+             jmp     (a1)
+.nxt83:
+             cmp.b   #84,d1
+             bne.s   .nxt84
+             move.w   #$3435,d1
+             jmp     (a1)
+.nxt84:
+             cmp.b   #85,d1
+             bne.s   .nxt85
+             move.w   #$3535,d1
+             jmp     (a1)
+.nxt85:
+             cmp.b   #86,d1
+             bne.s   .nxt86
+             move.w   #$3635,d1
+             jmp     (a1)
+.nxt86:
+             cmp.b   #87,d1
+             bne.s   .nxt87
+             move.w   #$3735,d1
+             jmp     (a1)
+.nxt87:
+             cmp.b   #88,d1
+             bne.s   .nxt88
+             move.w   #$3835,d1
+             jmp     (a1)
+.nxt88:
+             cmp.b   #89,d1
+             bne.s   .nxt89
+             move.w   #$3935,d1
+             jmp     (a1)
+.nxt89:
+             cmp.b   #90,d1
+             bne.s   .nxt90
+             move.w   #$4135,d1
+             jmp     (a1)
+.nxt90:
+             cmp.b   #91,d1
+             bne.s   .nxt91
+             move.w   #$4235,d1
+             jmp     (a1)
+.nxt91:
+             cmp.b   #92,d1
+             bne.s   .nxt92
+             move.w   #$4335,d1
+             jmp     (a1)
+.nxt92:
+             cmp.b   #93,d1
+             bne.s   .nxt93
+             move.w   #$4435,d1
+             jmp     (a1)
+.nxt93:
+             cmp.b   #94,d1
+             bne.s   .nxt94
+             move.w   #$4535,d1
+             jmp     (a1)
+.nxt94:
+             cmp.b   #95,d1
+             bne.s   .nxt95
+             move.w   #$4635,d1
+             jmp     (a1)
+.nxt95:
+             cmp.b   #96,d1
+             bne.s   .nxt96
+             move.w   #$3036,d1
+             jmp     (a1)
+.nxt96:
+             cmp.b   #97,d1
+             bne.s   .nxt97
+             move.w   #$3136,d1
+             jmp     (a1)
+.nxt97:
+             cmp.b   #98,d1
+             bne.s   .nxt98
+             move.w   #$3236,d1
+             jmp     (a1)
+.nxt98:
+             cmp.b   #99,d1
+             bne.s   .nxt99
+             move.w   #$3336,d1
+             jmp     (a1)
+.nxt99:
+             cmp.b   #100,d1
+             bne.s   .nxt100
+             move.w   #$3436,d1
+             jmp     (a1)
+.nxt100:
+             cmp.b   #101,d1
+             bne.s   .nxt101
+             move.w   #$3536,d1
+             jmp     (a1)
+.nxt101:
+             cmp.b   #102,d1
+             bne.s   .nxt102
+             move.w   #$3636,d1
+             jmp     (a1)
+.nxt102:
+             cmp.b   #103,d1
+             bne.s   .nxt103
+             move.w   #$3736,d1
+             jmp     (a1)
+.nxt103:
+             cmp.b   #104,d1
+             bne.s   .nxt104
+             move.w   #$3836,d1
+             jmp     (a1)
+.nxt104:
+             cmp.b   #105,d1
+             bne.s   .nxt105
+             move.w   #$3936,d1
+             jmp     (a1)
+.nxt105:
+             cmp.b   #106,d1
+             bne.s   .nxt106
+             move.w   #$4136,d1
+             jmp     (a1)
+.nxt106:
+             cmp.b   #107,d1
+             bne.s   .nxt107
+             move.w   #$4236,d1
+             jmp     (a1)
+.nxt107:
+             cmp.b   #108,d1
+             bne.s   .nxt108
+             move.w   #$4336,d1
+             jmp     (a1)
+.nxt108:
+             cmp.b   #109,d1
+             bne.s   .nxt109
+             move.w   #$4436,d1
+             jmp     (a1)
+.nxt109:
+             cmp.b   #110,d1
+             bne.s   .nxt110
+             move.w   #$4536,d1
+             jmp     (a1)
+.nxt110:
+             cmp.b   #111,d1
+             bne.s   .nxt111
+             move.w   #$4636,d1
+             jmp     (a1)
+.nxt111:
+             cmp.b   #112,d1
+             bne.s   .nxt112
+             move.w   #$3037,d1
+             jmp     (a1)
+.nxt112:
+             cmp.b   #113,d1
+             bne.s   .nxt113
+             move.w   #$3137,d1
+             jmp     (a1)
+.nxt113:
+             cmp.b   #114,d1
+             bne.s   .nxt114
+             move.w   #$3237,d1
+             jmp     (a1)
+.nxt114:
+             cmp.b   #115,d1
+             bne.s   .nxt115
+             move.w   #$3337,d1
+             jmp     (a1)
+.nxt115:
+             cmp.b   #116,d1
+             bne.s   .nxt116
+             move.w   #$3437,d1
+             jmp     (a1)
+.nxt116:
+             cmp.b   #117,d1
+             bne.s   .nxt117
+             move.w   #$3537,d1
+             jmp     (a1)
+.nxt117:
+             cmp.b   #118,d1
+             bne.s   .nxt118
+             move.w   #$3637,d1
+             jmp     (a1)
+.nxt118:
+             cmp.b   #119,d1
+             bne.s   .nxt119
+             move.w   #$3737,d1
+             jmp     (a1)
+.nxt119:
+             cmp.b   #120,d1
+             bne.s   .nxt120
+             move.w   #$3837,d1
+             jmp     (a1)
+.nxt120:
+             cmp.b   #121,d1
+             bne.s   .nxt121
+             move.w   #$3937,d1
+             jmp     (a1)
+.nxt121:
+             cmp.b   #122,d1
+             bne.s   .nxt122
+             move.w   #$4137,d1
+             jmp     (a1)
+.nxt122:
+             cmp.b   #123,d1
+             bne.s   .nxt123
+             move.w   #$4237,d1
+             jmp     (a1)
+.nxt123:
+             cmp.b   #124,d1
+             bne.s   .nxt124
+             move.w   #$4337,d1
+             jmp     (a1)
+.nxt124:
+             cmp.b   #125,d1
+             bne.s   .nxt125
+             move.w   #$4437,d1
+             jmp     (a1)
+.nxt125:
+             cmp.b   #126,d1
+             bne.s   .nxt126
+             move.w   #$4537,d1
+             jmp     (a1)
+.nxt126:
+             cmp.b   #127,d1
+             bne.s   .nxt127
+             move.w   #$4637,d1
+             jmp     (a1)
+.nxt127:
+             cmp.b   #128,d1
+             bne.s   .nxt128
+             move.w   #$3038,d1
+             jmp     (a1)
+.nxt128:
+             cmp.b   #129,d1
+             bne.s   .nxt129
+             move.w   #$3138,d1
+             jmp     (a1)
+.nxt129:
+             cmp.b   #130,d1
+             bne.s   .nxt130
+             move.w   #$3238,d1
+             jmp     (a1)
+.nxt130:
+             cmp.b   #131,d1
+             bne.s   .nxt131
+             move.w   #$3338,d1
+             jmp     (a1)
+.nxt131:
+             cmp.b   #132,d1
+             bne.s   .nxt132
+             move.w   #$3438,d1
+             jmp     (a1)
+.nxt132:
+             cmp.b   #133,d1
+             bne.s   .nxt133
+             move.w   #$3538,d1
+             jmp     (a1)
+.nxt133:
+             cmp.b   #134,d1
+             bne.s   .nxt134
+             move.w   #$3638,d1
+             jmp     (a1)
+.nxt134:
+             cmp.b   #135,d1
+             bne.s   .nxt135
+             move.w   #$3738,d1
+             jmp     (a1)
+.nxt135:
+             cmp.b   #136,d1
+             bne.s   .nxt136
+             move.w   #$3838,d1
+             jmp     (a1)
+.nxt136:
+             cmp.b   #137,d1
+             bne.s   .nxt137
+             move.w   #$3938,d1
+             jmp     (a1)
+.nxt137:
+             cmp.b   #138,d1
+             bne.s   .nxt138
+             move.w   #$4138,d1
+             jmp     (a1)
+.nxt138:
+             cmp.b   #139,d1
+             bne.s   .nxt139
+             move.w   #$4238,d1
+             jmp     (a1)
+.nxt139:
+             cmp.b   #140,d1
+             bne.s   .nxt140
+             move.w   #$4338,d1
+             jmp     (a1)
+.nxt140:
+             cmp.b   #141,d1
+             bne.s   .nxt141
+             move.w   #$4438,d1
+             jmp     (a1)
+.nxt141:
+             cmp.b   #142,d1
+             bne.s   .nxt142
+             move.w   #$4538,d1
+             jmp     (a1)
+.nxt142:
+             cmp.b   #143,d1
+             bne.s   .nxt143
+             move.w   #$4638,d1
+             jmp     (a1)
+.nxt143:
+             cmp.b   #144,d1
+             bne.s   .nxt144
+             move.w   #$3039,d1
+             jmp     (a1)
+.nxt144:
+             cmp.b   #145,d1
+             bne.s   .nxt145
+             move.w   #$3139,d1
+             jmp     (a1)
+.nxt145:
+             cmp.b   #146,d1
+             bne.s   .nxt146
+             move.w   #$3239,d1
+             jmp     (a1)
+.nxt146:
+             cmp.b   #147,d1
+             bne.s   .nxt147
+             move.w   #$3339,d1
+             jmp     (a1)
+.nxt147:
+             cmp.b   #148,d1
+             bne.s   .nxt148
+             move.w   #$3439,d1
+             jmp     (a1)
+.nxt148:
+             cmp.b   #149,d1
+             bne.s   .nxt149
+             move.w   #$3539,d1
+             jmp     (a1)
+.nxt149:
+             cmp.b   #150,d1
+             bne.s   .nxt150
+             move.w   #$3639,d1
+             jmp     (a1)
+.nxt150:
+             cmp.b   #151,d1
+             bne.s   .nxt151
+             move.w   #$3739,d1
+             jmp     (a1)
+.nxt151:
+             cmp.b   #152,d1
+             bne.s   .nxt152
+             move.w   #$3839,d1
+             jmp     (a1)
+.nxt152:
+             cmp.b   #153,d1
+             bne.s   .nxt153
+             move.w   #$3939,d1
+             jmp     (a1)
+.nxt153:
+             cmp.b   #154,d1
+             bne.s   .nxt154
+             move.w   #$4139,d1
+             jmp     (a1)
+.nxt154:
+             cmp.b   #155,d1
+             bne.s   .nxt155
+             move.w   #$4239,d1
+             jmp     (a1)
+.nxt155:
+             cmp.b   #156,d1
+             bne.s   .nxt156
+             move.w   #$4339,d1
+             jmp     (a1)
+.nxt156:
+             cmp.b   #157,d1
+             bne.s   .nxt157
+             move.w   #$4439,d1
+             jmp     (a1)
+.nxt157:
+             cmp.b   #158,d1
+             bne.s   .nxt158
+             move.w   #$4539,d1
+             jmp     (a1)
+.nxt158:
+             cmp.b   #159,d1
+             bne.s   .nxt159
+             move.w   #$4639,d1
+             jmp     (a1)
+.nxt159:
+             cmp.b   #160,d1
+             bne.s   .nxt160
+             move.w   #$3041,d1
+             jmp     (a1)
+.nxt160:
+             cmp.b   #161,d1
+             bne.s   .nxt161
+             move.w   #$3141,d1
+             jmp     (a1)
+.nxt161:
+             cmp.b   #162,d1
+             bne.s   .nxt162
+             move.w   #$3241,d1
+             jmp     (a1)
+.nxt162:
+             cmp.b   #163,d1
+             bne.s   .nxt163
+             move.w   #$3341,d1
+             jmp     (a1)
+.nxt163:
+             cmp.b   #164,d1
+             bne.s   .nxt164
+             move.w   #$3441,d1
+             jmp     (a1)
+.nxt164:
+             cmp.b   #165,d1
+             bne.s   .nxt165
+             move.w   #$3541,d1
+             jmp     (a1)
+.nxt165:
+             cmp.b   #166,d1
+             bne.s   .nxt166
+             move.w   #$3641,d1
+             jmp     (a1)
+.nxt166:
+             cmp.b   #167,d1
+             bne.s   .nxt167
+             move.w   #$3741,d1
+             jmp     (a1)
+.nxt167:
+             cmp.b   #168,d1
+             bne.s   .nxt168
+             move.w   #$3841,d1
+             jmp     (a1)
+.nxt168:
+             cmp.b   #169,d1
+             bne.s   .nxt169
+             move.w   #$3941,d1
+             jmp     (a1)
+.nxt169:
+             cmp.b   #170,d1
+             bne.s   .nxt170
+             move.w   #$4141,d1
+             jmp     (a1)
+.nxt170:
+             cmp.b   #171,d1
+             bne.s   .nxt171
+             move.w   #$4241,d1
+             jmp     (a1)
+.nxt171:
+             cmp.b   #172,d1
+             bne.s   .nxt172
+             move.w   #$4341,d1
+             jmp     (a1)
+.nxt172:
+             cmp.b   #173,d1
+             bne.s   .nxt173
+             move.w   #$4441,d1
+             jmp     (a1)
+.nxt173:
+             cmp.b   #174,d1
+             bne.s   .nxt174
+             move.w   #$4541,d1
+             jmp     (a1)
+.nxt174:
+             cmp.b   #175,d1
+             bne.s   .nxt175
+             move.w   #$4641,d1
+             jmp     (a1)
+.nxt175:
+             cmp.b   #176,d1
+             bne.s   .nxt176
+             move.w   #$3042,d1
+             jmp     (a1)
+.nxt176:
+             cmp.b   #177,d1
+             bne.s   .nxt177
+             move.w   #$3142,d1
+             jmp     (a1)
+.nxt177:
+             cmp.b   #178,d1
+             bne.s   .nxt178
+             move.w   #$3242,d1
+             jmp     (a1)
+.nxt178:
+             cmp.b   #179,d1
+             bne.s   .nxt179
+             move.w   #$3342,d1
+             jmp     (a1)
+.nxt179:
+             cmp.b   #180,d1
+             bne.s   .nxt180
+             move.w   #$3442,d1
+             jmp     (a1)
+.nxt180:
+             cmp.b   #181,d1
+             bne.s   .nxt181
+             move.w   #$3542,d1
+             jmp     (a1)
+.nxt181:
+             cmp.b   #182,d1
+             bne.s   .nxt182
+             move.w   #$3642,d1
+             jmp     (a1)
+.nxt182:
+             cmp.b   #183,d1
+             bne.s   .nxt183
+             move.w   #$3742,d1
+             jmp     (a1)
+.nxt183:
+             cmp.b   #184,d1
+             bne.s   .nxt184
+             move.w   #$3842,d1
+             jmp     (a1)
+.nxt184:
+             cmp.b   #185,d1
+             bne.s   .nxt185
+             move.w   #$3942,d1
+             jmp     (a1)
+.nxt185:
+             cmp.b   #186,d1
+             bne.s   .nxt186
+             move.w   #$4142,d1
+             jmp     (a1)
+.nxt186:
+             cmp.b   #187,d1
+             bne.s   .nxt187
+             move.w   #$4242,d1
+             jmp     (a1)
+.nxt187:
+             cmp.b   #188,d1
+             bne.s   .nxt188
+             move.w   #$4342,d1
+             jmp     (a1)
+.nxt188:
+             cmp.b   #189,d1
+             bne.s   .nxt189
+             move.w   #$4442,d1
+             jmp     (a1)
+.nxt189:
+             cmp.b   #190,d1
+             bne.s   .nxt190
+             move.w   #$4542,d1
+             jmp     (a1)
+.nxt190:
+             cmp.b   #191,d1
+             bne.s   .nxt191
+             move.w   #$4642,d1
+             jmp     (a1)
+.nxt191:
+             cmp.b   #192,d1
+             bne.s   .nxt192
+             move.w   #$3043,d1
+             jmp     (a1)
+.nxt192:
+             cmp.b   #193,d1
+             bne.s   .nxt193
+             move.w   #$3143,d1
+             jmp     (a1)
+.nxt193:
+             cmp.b   #194,d1
+             bne.s   .nxt194
+             move.w   #$3243,d1
+             jmp     (a1)
+.nxt194:
+             cmp.b   #195,d1
+             bne.s   .nxt195
+             move.w   #$3343,d1
+             jmp     (a1)
+.nxt195:
+             cmp.b   #196,d1
+             bne.s   .nxt196
+             move.w   #$3443,d1
+             jmp     (a1)
+.nxt196:
+             cmp.b   #197,d1
+             bne.s   .nxt197
+             move.w   #$3543,d1
+             jmp     (a1)
+.nxt197:
+             cmp.b   #198,d1
+             bne.s   .nxt198
+             move.w   #$3643,d1
+             jmp     (a1)
+.nxt198:
+             cmp.b   #199,d1
+             bne.s   .nxt199
+             move.w   #$3743,d1
+             jmp     (a1)
+.nxt199:
+             cmp.b   #200,d1
+             bne.s   .nxt200
+             move.w   #$3843,d1
+             jmp     (a1)
+.nxt200:
+             cmp.b   #201,d1
+             bne.s   .nxt201
+             move.w   #$3943,d1
+             jmp     (a1)
+.nxt201:
+             cmp.b   #202,d1
+             bne.s   .nxt202
+             move.w   #$4143,d1
+             jmp     (a1)
+.nxt202:
+             cmp.b   #203,d1
+             bne.s   .nxt203
+             move.w   #$4243,d1
+             jmp     (a1)
+.nxt203:
+             cmp.b   #204,d1
+             bne.s   .nxt204
+             move.w   #$4343,d1
+             jmp     (a1)
+.nxt204:
+             cmp.b   #205,d1
+             bne.s   .nxt205
+             move.w   #$4443,d1
+             jmp     (a1)
+.nxt205:
+             cmp.b   #206,d1
+             bne.s   .nxt206
+             move.w   #$4543,d1
+             jmp     (a1)
+.nxt206:
+             cmp.b   #207,d1
+             bne.s   .nxt207
+             move.w   #$4643,d1
+             jmp     (a1)
+.nxt207:
+             cmp.b   #208,d1
+             bne.s   .nxt208
+             move.w   #$3044,d1
+             jmp     (a1)
+.nxt208:
+             cmp.b   #209,d1
+             bne.s   .nxt209
+             move.w   #$3144,d1
+             jmp     (a1)
+.nxt209:
+             cmp.b   #210,d1
+             bne.s   .nxt210
+             move.w   #$3244,d1
+             jmp     (a1)
+.nxt210:
+             cmp.b   #211,d1
+             bne.s   .nxt211
+             move.w   #$3344,d1
+             jmp     (a1)
+.nxt211:
+             cmp.b   #212,d1
+             bne.s   .nxt212
+             move.w   #$3444,d1
+             jmp     (a1)
+.nxt212:
+             cmp.b   #213,d1
+             bne.s   .nxt213
+             move.w   #$3544,d1
+             jmp     (a1)
+.nxt213:
+             cmp.b   #214,d1
+             bne.s   .nxt214
+             move.w   #$3644,d1
+             jmp     (a1)
+.nxt214:
+             cmp.b   #215,d1
+             bne.s   .nxt215
+             move.w   #$3744,d1
+             jmp     (a1)
+.nxt215:
+             cmp.b   #216,d1
+             bne.s   .nxt216
+             move.w   #$3844,d1
+             jmp     (a1)
+.nxt216:
+             cmp.b   #217,d1
+             bne.s   .nxt217
+             move.w   #$3944,d1
+             jmp     (a1)
+.nxt217:
+             cmp.b   #218,d1
+             bne.s   .nxt218
+             move.w   #$4144,d1
+             jmp     (a1)
+.nxt218:
+             cmp.b   #219,d1
+             bne.s   .nxt219
+             move.w   #$4244,d1
+             jmp     (a1)
+.nxt219:
+             cmp.b   #220,d1
+             bne.s   .nxt220
+             move.w   #$4344,d1
+             jmp     (a1)
+.nxt220:
+             cmp.b   #221,d1
+             bne.s   .nxt221
+             move.w   #$4444,d1
+             jmp     (a1)
+.nxt221:
+             cmp.b   #222,d1
+             bne.s   .nxt222
+             move.w   #$4544,d1
+             jmp     (a1)
+.nxt222:
+             cmp.b   #223,d1
+             bne.s   .nxt223
+             move.w   #$4644,d1
+             jmp     (a1)
+.nxt223:
+             cmp.b   #224,d1
+             bne.s   .nxt224
+             move.w   #$3045,d1
+             jmp     (a1)
+.nxt224:
+             cmp.b   #225,d1
+             bne.s   .nxt225
+             move.w   #$3145,d1
+             jmp     (a1)
+.nxt225:
+             cmp.b   #226,d1
+             bne.s   .nxt226
+             move.w   #$3245,d1
+             jmp     (a1)
+.nxt226:
+             cmp.b   #227,d1
+             bne.s   .nxt227
+             move.w   #$3345,d1
+             jmp     (a1)
+.nxt227:
+             cmp.b   #228,d1
+             bne.s   .nxt228
+             move.w   #$3445,d1
+             jmp     (a1)
+.nxt228:
+             cmp.b   #229,d1
+             bne.s   .nxt229
+             move.w   #$3545,d1
+             jmp     (a1)
+.nxt229:
+             cmp.b   #230,d1
+             bne.s   .nxt230
+             move.w   #$3645,d1
+             jmp     (a1)
+.nxt230:
+             cmp.b   #231,d1
+             bne.s   .nxt231
+             move.w   #$3745,d1
+             jmp     (a1)
+.nxt231:
+             cmp.b   #232,d1
+             bne.s   .nxt232
+             move.w   #$3845,d1
+             jmp     (a1)
+.nxt232:
+             cmp.b   #233,d1
+             bne.s   .nxt233
+             move.w   #$3945,d1
+             jmp     (a1)
+.nxt233:
+             cmp.b   #234,d1
+             bne.s   .nxt234
+             move.w   #$4145,d1
+             jmp     (a1)
+.nxt234:
+             cmp.b   #235,d1
+             bne.s   .nxt235
+             move.w   #$4245,d1
+             jmp     (a1)
+.nxt235:
+             cmp.b   #236,d1
+             bne.s   .nxt236
+             move.w   #$4345,d1
+             jmp     (a1)
+.nxt236:
+             cmp.b   #237,d1
+             bne.s   .nxt237
+             move.w   #$4445,d1
+             jmp     (a1)
+.nxt237:
+             cmp.b   #238,d1
+             bne.s   .nxt238
+             move.w   #$4545,d1
+             jmp     (a1)
+.nxt238:
+             cmp.b   #239,d1
+             bne.s   .nxt239
+             move.w   #$4645,d1
+             jmp     (a1)
+.nxt239:
+             cmp.b   #240,d1
+             bne.s   .nxt240
+             move.w   #$3046,d1
+             jmp     (a1)
+.nxt240:
+             cmp.b   #241,d1
+             bne.s   .nxt241
+             move.w   #$3146,d1
+             jmp     (a1)
+.nxt241:
+             cmp.b   #242,d1
+             bne.s   .nxt242
+             move.w   #$3246,d1
+             jmp     (a1)
+.nxt242:
+             cmp.b   #243,d1
+             bne.s   .nxt243
+             move.w   #$3346,d1
+             jmp     (a1)
+.nxt243:
+             cmp.b   #244,d1
+             bne.s   .nxt244
+             move.w   #$3446,d1
+             jmp     (a1)
+.nxt244:
+             cmp.b   #245,d1
+             bne.s   .nxt245
+             move.w   #$3546,d1
+             jmp     (a1)
+.nxt245:
+             cmp.b   #246,d1
+             bne.s   .nxt246
+             move.w   #$3646,d1
+             jmp     (a1)
+.nxt246:
+             cmp.b   #247,d1
+             bne.s   .nxt247
+             move.w   #$3746,d1
+             jmp     (a1)
+.nxt247:
+             cmp.b   #248,d1
+             bne.s   .nxt248
+             move.w   #$3846,d1
+             jmp     (a1)
+.nxt248:
+             cmp.b   #249,d1
+             bne.s   .nxt249
+             move.w   #$3946,d1
+             jmp     (a1)
+.nxt249:
+             cmp.b   #250,d1
+             bne.s   .nxt250
+             move.w   #$4146,d1
+             jmp     (a1)
+.nxt250:
+             cmp.b   #251,d1
+             bne.s   .nxt251
+             move.w   #$4246,d1
+             jmp     (a1)
+.nxt251:
+             cmp.b   #252,d1
+             bne.s   .nxt252
+             move.w   #$4346,d1
+             jmp     (a1)
+.nxt252:
+             cmp.b   #253,d1
+             bne.s   .nxt253
+             move.w   #$4446,d1
+             jmp     (a1)
+.nxt253:
+             cmp.b   #254,d1
+             bne.s   .nxt254
+             move.w   #$4546,d1
+             jmp     (a1)
+.nxt254:
+             cmp.b   #255,d1
+             bne.s   .nxt255
+             move.w   #$4646,d1
+             jmp     (a1)
+.nxt255:
+         move.w   #$0,d1
+         jmp     (a1)
+
+
 
 
 ;------------------------------------------------------------------------------------------
@@ -10792,7 +12606,7 @@ MEMCheckPatternFast:
 	dc.l	$aaaaaaaa,$55555555,$f0f0f0f0,$0f0f0f0f,0,0
 
 RomFont:
-	incbin	"DIAGROM/TopazFont.bin"
+	incbin	"TopazFont.bin"
 EndRomFont:
 	EVEN
 
@@ -10861,6 +12675,72 @@ par81txt:
 HALTTXT:
 	dc.b	"- NO MEMORY FOUND - HALTING SYSTEM",0
 
+aParallelCodeDD:dc.b '- Parallel Code $dd - Start of Agnus/Gary Bus Tests',$A
+					; DATA XREF: ROM:00F8018Co
+		dc.b $D,0
+
+aParallelCodeDE:dc.b '- Parallel Code $de - Start of Zorro Tests', $A, $D, 0
+aChipsetMirror	dc.b '    Checking for a chipset mirror: ',0
+aFloppyTests	dc.b '- Starting Floppy Tests', $A, $D, 0
+aFloppyMTRON	dc.b '    Turning on Disk Motor DF0: ', 0
+aFloppyTRK0	dc.b '    Stepping Disk to TRK0: ', 0
+aFloppyTRK40	dc.b '    Stepping Disk to Track 40: ', 0
+
+
+aIDETests	dc.b '- Starting IDE Tests', $A, $D, 0
+aIDERDY		dc.b '    Waiting for Drive RDY (Mask 0xC1): ', 0
+aIDEDRQ		dc.b '    Waiting for Drive DRQ (Mask 0xC9): ', 0
+aIDEStatus	dc.b '    Reading Interrupt Status: ', 0
+aIDEChange	dc.b '    Reading Interrupt Change: ', 0
+aIDERead	dc.b '    Reading Data From Drive: ', 0,0,0
+aIDEInterruptCheck dc.b '    Checking we have a pending IDE Interrupt.',$A,$D,0
+aIDEInterruptClearedDrive dc.b '    IDE Interrupt Cleared at the Drive',$A,$D,0
+aIDEInterruptDetected dc.b '    IDE Interrupt Detected',$A,$D,0
+aIDEInterruptNotDetected dc.b '    IDE Interrupt Not Detected: ',0
+aIDEInterruptIntChangedReading dc.b '    Reading Gayle IntChanged: ', 0
+aIDEInterruptIntChangedWriting dc.b '    Writing Gayle IntChanged: ', 0
+aIDEInterruptIntStatusReading dc.b '    Reading Gayle IntStatus: ', 0
+aMirrorNotDetected dc.b ' Mirror Not Detected ', $A, $D, 0
+aMirrorDetected dc.b ' Mirror Detected ', $A, $D, 0
+aIDEInterfaceNotFound dc.b '    No IDE Interface Found (Aborting IDE Tests)', $A, $D, 0
+aIDEInterfaceFound dc.b '    IDE Interface Found (Running IDE Tests)', $A, $D, 0
+aReadGayleVersion dc.b '    Reading Gayle Version: ',0
+
+aCacheTests	dc.b '- Starting Cache Tests', $A, $D, 0
+aCACRRead	dc.b '    Reading CACR Register:', 0
+aCACRWrite	dc.b '    Writing CACR Register:', 0
+	
+aCacheWriteByte	dc.b '    Writing Byte to Cached Memory ', 0
+aCacheWriteWord	dc.b '    Writing Word to Cached Memory ', 0
+aCacheWriteLong	dc.b '    Writing Long to Cached Memory ', 0
+
+aCacheReadByte	dc.b '    Reading Byte from Cached Memory ', 0
+aCacheReadWord	dc.b '    Reading Word from Cached Memory ', 0
+aCacheReadLong	dc.b '    Reading Long from Cached Memory ', 0
+	
+aFPUTests	dc.b '- Starting FPU Tests', $A, $D, 0
+aFPUReset	dc.b '  Resetting the FPU: ',0
+aFPUVersion	dc.b '  Checking FPU Version: ',0
+aFPUStatus	dc.b '  Reading  FPU Status: ',0
+aFPUFound:	dc.b ' FOUND',$A, $D,0
+aFPUNotFound:	dc.b ' NOT FOUND',$A, $D,0
+aFPU81:	dc.b 'MC68881',$A, $D,0
+aFPU82:	dc.b 'MC68882',$A, $D,0
+aCrLf		dc.b	$A,$d,0
+aZRAMError: 	dc.b '   - Error Detected. Expected: ',0
+aZRAMActual: 	dc.b 'Actual: ',0
+aZorroTest: 	dc.b '   - Zorro Byte Read: ',0
+aZorroDone: 	dc.b 'NO MORE BOARDS',$A, $D,0
+aZorroTestEqual:dc.b '   - Checking Zorro Consistent Read: ',0
+aZorroDoConfig:	dc.b '   - Attempting To Configure: ',0
+aZorroIIISkipped:dc.b 'SHUTUP (Zorro III Card)', $A, $D,0
+aZorroIINonRAMDone:  dc.b 'DONE (Zorro II Non-RAM Card)', $A, $D,0
+aZorroIIDone:  dc.b 'DONE (Zorro II RAM Card)', $A, $D,0
+aZorroRAMTest	dc.b '- Checking Zorro Memory Location $200000',  $A, $D,0
+aMMCReset	dc.b '- Resetting MMC Card on port 0 ',0
+aTestPassed:	dc.b 'PASSED', $A, $D,0
+aTestFailed:	dc.b 'FAILED', $A, $D,0
+
 
 writeffff:
 	dc.b	"  - Test of writing word $FFFF to $400 ",0
@@ -10885,7 +12765,7 @@ InitTxt:
 	dc.b	"Amiga DiagROM "
 	VERSION
 	dc.b	" - "
-		incbin	"ram:BootDate.txt"
+		incbin	"BuildDate.txt"
 	dc.b	" - By John (Chucky/The Gang) Hertell",$a,$d,$a,$d,0
 WaitReleasedTxt:
 	dc.b	"Waiting for all buttons to be released",$a
@@ -11027,7 +12907,7 @@ MainMenuText:
 	dc.b	"                             DiagROM "
 	VERSION
 	dc.b	" - "
-	incbin	"ram:BootDate.txt"
+	incbin	"BuildDate.txt"
 	dc.b	$a
 	dc.b	"                        By John (Chucky / The Gang) Hertell",$a,$a
 	dc.b	"                                       MAIN MENU",$a,$a,0
@@ -11622,7 +13502,7 @@ bytehextxt:
 
 
 EnglishKey:
-	dc.b	"´1234567890-=| 0"
+	dc.b	"\B41234567890-=| 0"
 	dc.b	"qwertyuiop[] "; 1c
 	dc.b	"123asdfghjkl;`" ; 2a
 	dc.b	"  456 zxcvbnm,./ " ;3b
@@ -11694,7 +13574,7 @@ STxt1759:	dc.b	"Siuns 1759Hz   ",0
 
 test:
  	dc.b	$a,"# $ % & ( ) * + , - . / 0 1 2 3 4 5 6 7 8 9 : ; < = > ? @",$a
- 	dc.b	"A B C D E F G H I J K L M N O P Q R S T U V W X Y Z Å Ä Ö",0
+ 	dc.b	"A B C D E F G H I J K L M N O P Q R S T U V W X Y Z \C5 \C4 \D6",0
 	 
 
 
@@ -11756,10 +13636,10 @@ Octant_Table:
 	dc.b	7*4+1
 
 Music:
-	incbin	"DiagROM/Music.MOD"
+	incbin	"Music.MOD"
 	EVEN
 TestPic:
-	incbin	"DiagRom/TestPIC.raw"
+	incbin	"TestPIC.raw"
 EndTestPic:
 	EVEN
 EndMusic:
@@ -11996,7 +13876,7 @@ NoDraw:
 	EVEN
 	dc.l	0
 MenuNumber:
-	dc.w	0	; Contains the menunuber to be printed, from the Menus list
+	dc.w	0	; Contains the menunuber to be printed, from the Menus\A0list
 NoChar:	dc.b	0	; if 0 print char, anything else, never do screenactions. (no chipmem avaible)
 Inverted:
 	dc.b	0	; if 0, former char was not inverted
